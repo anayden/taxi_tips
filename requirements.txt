@@ -2,3 +2,10 @@ black
 flake8
 isort
 mypy
+
+numpy
+scikit-learn
+pandas
+
+fastapi
+uvicorn
