@@ -1,33 +1,28 @@
-import os
 import json
-import random
-import pathlib
+import pandas as pd
 
 from locust import HttpUser, task
 
 
+data = pd.read_csv('/project/results/test.csv', usecols=["trip_distance", "payment_type",
+                   "fare_amount", "tip_amount", "total_amount", "pickup_month", "pickup_hour", "pickup_day_of_week"])
 
-IMGS_DIR = pathlib.Path(os.environ["IMGS_DIR"])
-# DOG_IDS = FNAME_CLASS.keys()
-DOG_IDS = ["a", "b"]
-JPG_FILES = [
-    x for x in IMGS_DIR.glob("**/*.jpg") if any(map(lambda id_: id_ in str(x), DOG_IDS))
-]
+# Predictions within EPSILON are deemed accurate for the test
+EPSILON = 0.8
 
 
 class LoadGenerator(HttpUser):
     @task
     def prediction(self) -> None:
-        target_image = random.choice(JPG_FILES)
-        # for file_name, sent_breed in FNAME_CLASS.items():
-	for file_name, sent_breed in [["a", "a"], ["b", "b"]]:
-            if file_name in target_image.name:
-                break
+        random_row = data.sample()
+        expected_tip = float(random_row["tip_amount"])
+        random_row = random_row.drop(columns=["tip_amount"])
+        request_json = json.loads(random_row.to_json(
+            index=False, orient='table'))['data'][0]
 
-        payload = dict(binData=target_image.read_bytes())
-        with self.client.post("", files=payload, catch_response=True) as response:
-            predicted_breed = json.loads(response.text)["strData"]
-            if sent_breed != predicted_breed:
+        with self.client.post("", json=request_json, catch_response=True) as response:
+            predicted_tip = json.loads(response.text)["tip"]
+            if abs(expected_tip - predicted_tip) > EPSILON:
                 response.failure(
-                    f"Incorrect prediction for {target_image.name} ({sent_breed}) got {predicted_breed}."
+                    f"Incorrect prediction expected {expected_tip}, got {predicted_tip}."
                 )

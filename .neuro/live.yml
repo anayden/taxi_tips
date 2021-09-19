@@ -10,8 +10,17 @@ images:
     dockerfile: $[[ flow.workspace ]]/Dockerfile
     context: $[[ flow.workspace ]]/
     build_preset: cpu-large
+  locust:
+    ref: image:$[[ flow.project_id ]]-locust:v1
+    dockerfile: $[[ flow.workspace ]]/config/locust.dockerfile
+    context: $[[ flow.workspace ]]/config/
+    build_preset: cpu-large
 
 volumes:
+  config:
+    remote: storage:$[[ flow.project_id ]]/config
+    mount: /project/config
+    local: config
   data:
     remote: storage:$[[ flow.project_id ]]/data
     mount: /project/data
@@ -35,7 +44,9 @@ volumes:
 
 jobs:
   download_data:
+    name: download_data
     image: neuromation/neuro-extras:latest
+    detach: False
     volumes:
       - $[[ volumes.data.ref ]]
     preset: cpu-small
@@ -51,15 +62,35 @@ jobs:
     life_span: 10d
     http_port: 8000
     http_auth: False
+    preset: cpu-small
+    multi: true
+    detach: true
     volumes:
       - $[[ upload(volumes.code).ref_ro ]]
       - $[[ volumes.results.ref_ro ]]
+    params:
+      model_tag: final
     env:
       EXPOSE_SSH: "yes"
       PYTHONPATH: $[[ volumes.code.mount ]]
+      MODEL_TAG: ${{ params.model_tag  }}
     bash: |
         cd $[[ volumes.project.mount ]]
-        uvicorn modules.infer:app
+        uvicorn modules.inference:app --host 0.0.0.0
+
+  train:
+    image: $[[ images.myimage.ref ]]
+    preset: gpu-small
+    volumes:
+      - $[[ upload(volumes.code).ref_ro ]]
+      - $[[ upload(volumes.data).ref_ro ]]
+      - $[[ volumes.results.ref_rw ]]
+    env:
+      EXPOSE_SSH: "yes"
+      PYTHONPATH: $[[ volumes.code.mount ]]
+    detach: True
+    bash: |
+        python modules/train.py
 
   jupyter:
     action: gh:neuro-actions/jupyter@v1.0.0
@@ -78,20 +109,31 @@ jobs:
       volumes_project_remote: $[[ volumes.project.remote ]]
 
   locust:
-    image: locustio/locust:1.4.1
-    name: $[[ flow.title ]]-locust
+    image: $[[ images.locust.ref ]]
+    preset: cpu-small
+    multi: true
     http_port: 8080
     http_auth: False
     life_span: 1d
     detach: True
     browse: True
     params:
-      # https://open-source-stack-test-inference--yevheniisemendiak.jobs.neuro-compute.org.neu.ro/predict
-      # https://seldon.onprem-poc.org.neu.ro/seldon/seldon/my-model/api/v1.0/predictions
-      endpoint_url:
+      endpoint_url: https://taxi-tips-lb--alexeynaiden.jobs.default.org.neu.ro/predict
     volumes:
+      - $[[ volumes.results.ref_ro ]]
       - $[[ upload(volumes.code).ref_ro ]]
     env:
-      PYTHONPATH: $[[ volumes.src.mount ]]/..
+      PYTHONPATH: $[[ volumes.code.mount ]]/..
     cmd: |
       -f $[[ volumes.code.mount ]]/locust.py --web-port 8080 -H $[[ params.endpoint_url ]]
+
+  lb:
+    image: haproxytech/haproxy-ubuntu:2.4
+    volumes:
+      - $[[ upload(volumes.config).ref ]]
+    preset: cpu-small
+    detach: False
+    http_port: 8000
+    http_auth: False
+    bash: |
+      haproxy -f $[[ volumes.config.mount ]]/haproxy.cfg
